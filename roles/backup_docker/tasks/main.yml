@@ -1,0 +1,90 @@
+---
+# =============================================================================
+# roles/backup_docker/tasks/main.yml
+# Tasks สำหรับสำรองข้อมูล Docker (Volumes, คอนฟิก, compose files)
+# =============================================================================
+
+# ป้องกันข้อผิดพลาดหากเครื่องเป้าหมายไม่มี Docker (เช่น Proxmox host)
+- name: "ตรวจสอบว่ามี Docker ติดตั้งอยู่บนเครื่องหรือไม่"
+  ansible.builtin.command: which docker
+  register: docker_check
+  failed_when: false
+  changed_when: false
+  tags:
+    - docker
+    - check
+
+# รันเมื่อมี docker ติดตั้งอยู่และมีการกำหนดไดเรกทอรีของ compose ไว้
+- name: "ดำเนินการสำรองข้อมูล Docker"
+  block:
+    # -------------------------------------------------------------
+    # ขั้นตอนที่ 1: เตรียม staging directory สำหรับก๊อปปี้ configs
+    # -------------------------------------------------------------
+    - name: "สร้าง Docker Config Staging Directory ใน Temp"
+      ansible.builtin.file:
+        path: "{{ backup_temp_dir }}/docker-configs"
+        state: directory
+        owner: "{{ backup_user }}"
+        group: "{{ backup_group }}"
+        mode: "0750"
+      become: true
+
+    # ทำการก๊อปปี้เฉพาะไฟล์ docker-compose.yml และ .env ไปที่ staging เพื่อสำรองข้อมูล
+    # ช่วยให้มีคอนฟิกที่คลีนในการกู้คืน
+    - name: "ก๊อปปี้ docker-compose.yml และ .env ไปยัง Staging"
+      ansible.builtin.shell: |
+        dest_dir="{{ backup_temp_dir }}/docker-configs/$(basename {{ item }})"
+        mkdir -p "$dest_dir"
+        cp {{ item }}/docker-compose.yml "$dest_dir/" 2>/dev/null || true
+        cp {{ item }}/.env "$dest_dir/" 2>/dev/null || true
+      loop: "{{ docker_compose_dirs }}"
+      become: true
+      changed_when: false
+
+    # -------------------------------------------------------------
+    # ขั้นตอนที่ 2: หยุด Container ชั่วคราว (ถ้ากำหนดไว้)
+    # -------------------------------------------------------------
+    - name: "หยุด Docker Containers ชั่วคราว (Data Consistency)"
+      ansible.builtin.command: "docker compose stop"
+      args:
+        chdir: "{{ item }}"
+      loop: "{{ docker_compose_dirs }}"
+      when: stop_containers_before_backup | bool
+      become: true
+      register: stop_output
+      ignore_errors: yes # ป้องกันกระบวนการหยุดทั้งหมดพังถ้าบาง container มีปัญหา
+
+    # -------------------------------------------------------------
+    # ขั้นตอนที่ 3: กำหนดรายการไฟล์และไดเรกทอรีที่จะส่งให้ restic สำรองข้อมูล
+    # -------------------------------------------------------------
+    # เราจะส่ง path เหล่านี้ให้ role `restic_backup` นำไป backup
+    - name: "กำหนด Paths ของ Docker ที่ต้อง Backup สำหรับ Restic"
+      ansible.builtin.set_fact:
+        docker_backup_paths:
+          - "{{ backup_temp_dir }}/docker-configs"
+          - "{{ docker_volumes_dir }}"
+  
+  # rescue/always block: มีความสำคัญอย่างมาก (Production Safeguard)
+  # เพื่อรับประกันว่า ไม่ว่าการ backup จะสำเร็จหรือล้มเหลว
+  # Docker container ทั้งหมดที่ปิดไปจะต้องได้รับการ "START กลับขึ้นมาทำงานเสมอ"
+  rescue:
+    - name: "แจ้งเตือนเมื่อเกิดข้อผิดพลาดในการรัน Docker Backup"
+      ansible.builtin.debug:
+        msg: "เกิดข้อผิดพลาดในการสำรองข้อมูล Docker เริ่มรันกระบวนการฟื้นคืนระบบ..."
+
+  always:
+    - name: "เริ่มทำงาน Docker Containers อีกครั้ง (เสมอ)"
+      ansible.builtin.command: "docker compose start"
+      args:
+        chdir: "{{ item }}"
+      loop: "{{ docker_compose_dirs }}"
+      when: stop_containers_before_backup | bool
+      become: true
+      register: start_output
+      failed_when: false # ป้องกัน playbook ค้างหาก container บางตัวพังขณะ start
+      ignore_errors: yes
+
+  when: docker_check.rc == 0 and docker_compose_dirs | length > 0
+  tags:
+    - docker
+    - backup

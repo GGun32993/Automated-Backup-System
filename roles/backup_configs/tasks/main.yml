@@ -1,0 +1,32 @@
+---
+# =============================================================================
+# roles/backup_configs/tasks/main.yml
+# Tasks สำหรับสำรองข้อมูล Configuration Files ทั่วไปของระบบ
+# =============================================================================
+
+# ค้นหาว่าไฟล์หรือไดเรกทอรีที่กำหนดไว้ใน config_backup_paths มีอยู่จริงบนเครื่องเป้าหมายหรือไม่
+# ป้องกันปัญหา restic ฟ้อง error ถ้า path ไม่มีอยู่จริง
+- name: "ตรวจสอบว่า Config Paths มีอยู่จริงบนระบบหรือไม่"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ config_backup_paths }}"
+  register: config_paths_stat
+  tags:
+    - configs
+    - backup
+
+# กรองเฉพาะ path ที่มีอยู่จริง (stat.exists == true)
+- name: "สร้างรายการ Config Paths ที่ใช้งานได้จริง"
+  ansible.builtin.set_fact:
+    valid_config_paths: "{{ config_paths_stat.results | selectattr('stat.exists', 'equalto', true) | map(attribute='item') | list }}"
+  tags:
+    - configs
+    - backup
+
+- name: "แสดงรายการ Config Paths ที่ผ่านการตรวจสอบ"
+  ansible.builtin.debug:
+    msg: "เตรียมสำรองคอนฟิก: {{ valid_config_paths }}"
+  when: valid_config_paths | length > 0
+  tags:
+    - configs
+    - backup

@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# roles/restic_setup/defaults/main.yml
+# ค่าเริ่มต้นสำหรับ Restic & Rclone Setup Role
+# =============================================================================
+
+# เวอร์ชันของ restic ที่จะดาวน์โหลดมาติดตั้ง (ดาวน์โหลดตรงจาก GitHub Release)
+restic_version: "0.17.3"
+
+# สถาปัตยกรรมของเครื่อง (เช่น amd64, arm, arm64)
+restic_arch: "amd64"
+
+# โฟลเดอร์ที่เก็บไฟล์คอนฟิกของ rclone สำหรับ backup user
+rclone_config_dir: "{{ backup_base_dir }}/.config/rclone"
+
+# ไฟล์คอนฟิกของ rclone
+rclone_config_file: "{{ rclone_config_dir }}/rclone.conf"

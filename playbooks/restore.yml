@@ -1,0 +1,93 @@
+---
+# =============================================================================
+# playbooks/restore.yml
+# Playbook สำหรับกู้คืนข้อมูลแบบแมนนวล (Manual Restore Playbook)
+# =============================================================================
+# ใช้ในการกู้คืนไฟล์ผ่านทาง Ansible โดยระบบจะถามข้อมูลประกอบผ่านหน้าจอ
+#
+# วิธีใช้งาน:
+#   ansible-playbook -i inventory/hosts.yml playbooks/restore.yml --ask-vault-pass
+# =============================================================================
+
+- name: "เตรียมกู้คืนข้อมูลจาก Restic Repository (Google Drive)"
+  hosts: localhost
+  gather_facts: false
+  vars_prompt:
+    - name: target_host
+      prompt: "ระบุชื่อเครื่องปลายทางที่ต้องการกู้คืนข้อมูล (เช่น 192.168.1.20 หรือ docker_hosts)"
+      private: false
+      default: "docker_hosts"
+
+    - name: snapshot_id
+      prompt: "ระบุ snapshot ID ที่ต้องการกู้คืน (ระบุ 'latest' สำหรับครั้งล่าสุด)"
+      private: false
+      default: "latest"
+
+    - name: restore_path
+      prompt: "ระบุพาธปลายทางที่จะวางไฟล์กู้คืน (เช่น /opt/backup/restore-test)"
+      private: false
+      default: "/opt/backup/restore-test"
+
+  tasks:
+    - name: "ส่งผ่านตัวแปรไปยัง Play ถัดไป"
+      ansible.builtin.add_host:
+        name: "{{ target_host }}"
+        groups: restore_targets
+        target_snapshot: "{{ snapshot_id }}"
+        target_restore_path: "{{ restore_path }}"
+
+- name: "ดำเนินการกู้คืนข้อมูลในเครื่องปลายทาง"
+  hosts: restore_targets
+  become: yes
+  vars_files:
+    - ../vault/secrets.yml
+
+  tasks:
+    - name: "โหลดตัวแปรสภาพแวดล้อมที่ตั้งไว้"
+      ansible.builtin.set_fact:
+        snap_id: "{{ hostvars['localhost']['target_snapshot'] }}"
+        dest_path: "{{ hostvars['localhost']['target_restore_path'] }}"
+
+    - name: "สร้างโฟลเดอร์สำหรับรองรับไฟล์กู้คืน"
+      ansible.builtin.file:
+        path: "{{ dest_path }}"
+        state: directory
+        owner: "{{ backup_user }}"
+        group: "{{ backup_group }}"
+        mode: "0750"
+
+    - name: "ตรวจสอบรายการ Snapshot ปัจจุบันในระบบเพื่ออ้างอิง"
+      ansible.builtin.command: "restic -r {{ restic_repo }} snapshots"
+      environment:
+        RESTIC_PASSWORD: "{{ restic_password }}"
+        RCLONE_CONFIG: "{{ rclone_config_file | default(backup_base_dir ~ '/.config/rclone/rclone.conf') }}"
+      register: snapshot_list
+      changed_when: false
+      become: true
+      become_user: "{{ backup_user }}"
+
+    - name: "แสดงรายการ Snapshot ทั้งหมดที่มีอยู่"
+      ansible.builtin.debug:
+        var: snapshot_list.stdout_lines
+
+    - name: "ยืนยันการเริ่มกู้คืนข้อมูล (หยุดรอแอดมินอนุมัติ)"
+      ansible.builtin.pause:
+        prompt: "กำลังจะกู้คืน Snapshot ID '{{ snap_id }}' ไปยังไดเรกทอรี '{{ dest_path }}' กด Enter เพื่อเริ่ม หรือ Ctrl+C แล้วตามด้วย A เพื่อยกเลิก"
+
+    - name: "ดำเนินการรันคำสั่ง Restic Restore กู้ข้อมูล"
+      ansible.builtin.command: "restic -r {{ restic_repo }} --option rclone.program=rclone --option rclone.args='config disconnect' restore {{ snap_id }} --target {{ dest_path }}"
+      environment:
+        RESTIC_PASSWORD: "{{ restic_password }}"
+        RCLONE_CONFIG: "{{ rclone_config_file | default(backup_base_dir ~ '/.config/rclone/rclone.conf') }}"
+      become: true
+      become_user: "{{ backup_user }}"
+      register: restore_output
+
+    - name: "แสดงรายงานผลการกู้คืนสำเร็จ"
+      ansible.builtin.debug:
+        msg:
+          - "--- การกู้คืนข้อมูลสำเร็จ ---"
+          - "เครื่องเป้าหมาย: {{ inventory_hostname }}"
+          - "ไดเรกทอรีที่วางไฟล์: {{ dest_path }}"
+          - "รายละเอียดเพิ่มเติม:"
+          - "{{ restore_output.stdout }}"

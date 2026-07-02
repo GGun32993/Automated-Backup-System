@@ -1,0 +1,56 @@
+{
+  "username": "Home Lab Backup Bot",
+  "avatar_url": "https://i.imgur.com/8ncmfyY.png",
+  "embeds": [
+    {
+      "title": "🔄 รายงานการสำรองข้อมูล (Backup Report)",
+      "description": "ระบบได้ทำภารกิจสำรองข้อมูลอัตโนมัติเรียบร้อยแล้ว",
+      "color": {{ 3066993 if backup_status == 'SUCCESS' else 15158332 }},
+      "fields": [
+        {
+          "name": "🖥️ เครื่องเป้าหมาย (Host)",
+          "value": "`{{ inventory_hostname }}`",
+          "inline": true
+        },
+        {
+          "name": "📊 สถานะ (Status)",
+          "value": "{{ '✅ สำเร็จ (Success)' if backup_status == 'SUCCESS' else '❌ ล้มเหลว (Failed)' }}",
+          "inline": true
+        },
+        {
+          "name": "🔑 Snapshot ID",
+          "value": "`{{ backup_metrics.snapshot_id | default('N/A') }}`",
+          "inline": true
+        },
+        {
+          "name": "📥 ข้อมูลเพิ่มใหม่ (Added)",
+          "value": "**{{ backup_metrics.size_added | default('N/A') }}**",
+          "inline": true
+        },
+        {
+          "name": "📁 ขนาดรวมทั้งหมด (Total)",
+          "value": "{{ backup_metrics.size_total | default('N/A') }}",
+          "inline": true
+        },
+        {
+          "name": "⏱️ ระยะเวลา (Duration)",
+          "value": "{{ backup_metrics.duration | default('N/A') }}",
+          "inline": true
+        },
+        {
+          "name": "🏷️ Restic Tag",
+          "value": "`{{ backup_tags | join(', ') }}`",
+          "inline": false
+        },
+        {
+          "name": "📌 รายการไดเรกทอรี (Paths)",
+          "value": "```\n{{ backup_paths | join('\n') }}\n```",
+          "inline": false
+        }
+      ],
+      "footer": {
+        "text": "Automated Backup System v1.0 • {{ ansible_date_time.iso8601 }}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# =============================================================================
+# สคริปต์หลักสำหรับทำงาน Restic Backup (Backup Wrapper Script)
+# สร้างโดย Ansible - รันจาก Cron Job หรือรันแบบ Manual ก็ได้
+# =============================================================================
+set -e
+
+# กำหนดสิทธิ์ขั้นต่ำสำหรับการทำงาน
+umask 0077
+
+# โหลด Environment Variables ของ Restic
+ENV_FILE="{{ restic_env_file }}"
+if [ -f "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+else
+    echo "ERROR: ไม่พบไฟล์ Environment $ENV_FILE" >&2
+    exit 1
+fi
+
+# กำหนดตัวแปรและโครงสร้าง Log
+LOG_DIR="{{ backup_log_dir }}"
+TODAY=$(date +%Y-%m-%d)
+LOG_FILE="$LOG_DIR/backup-$TODAY.log"
+EXCLUDE_FILE="{{ backup_base_dir }}/.restic-excludes"
+METRICS_FILE="{{ backup_base_dir }}/.backup-metrics.json"
+
+mkdir -p "$LOG_DIR"
+touch "$LOG_FILE"
+
+# ฟังก์ชันบันทึก Log ลงไฟล์
+log_message() {
+    local LEVEL="$1"
+    local MSG="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$LEVEL] $MSG" >> "$LOG_FILE"
+    echo "[$LEVEL] $MSG"
+}
+
+log_message "INFO" "================= เริ่มต้นทำงานระบบสำรองข้อมูล (Hostname: $HOSTNAME) ================="
+
+# ตรวจสอบการล๊อค (Lock) ของ Restic
+# ถ้ามีการทำงานค้างอยู่ Restic จะล๊อคตัวเองไว้ ต้องเคลียร์ล๊อกที่ไม่ทำงานแล้วออกก่อน
+log_message "INFO" "ตรวจสอบและเคลียร์ Restic Lock..."
+restic unlock --option rclone.program=rclone --option rclone.args="config disconnect" >> "$LOG_FILE" 2>&1 || true
+
+# เริ่มจับเวลา
+START_TIME=$(date +%s)
+
+# รันคำสั่งสำรองข้อมูลจริง
+# ใช้ --json เพื่อแปลง output เป็น JSON เอาไว้อ่านเก็บสถิติ
+log_message "INFO" "กำลังรัน restic backup..."
+BACKUP_PATHS=({% for path in backup_paths %}"{{ path }}" {% endfor %})
+
+if [ {% raw %}${#BACKUP_PATHS[@]}{% endraw %} -eq 0 ]; then
+    log_message "ERROR" "ไม่มี Paths ที่กำหนดไว้สำหรับการ Backup! สิ้นสุดการทำงาน"
+    exit 1
+fi
+
+# แปลง tags เป็นอาร์กิวเมนต์
+TAGS=({% for tag in backup_tags %}"--tag" "{{ tag }}" {% endfor %})
+
+# รัน Restic Backup
+# เราใช้ rclone program override เพื่อความรวดเร็วและใช้ rclone.conf ที่เราสร้างขึ้น
+BACKUP_STATUS=0
+restic backup \
+    --option rclone.program=rclone \
+    --option rclone.args="config disconnect" \
+    "${TAGS[@]}" \
+    --exclude-file="$EXCLUDE_FILE" \
+    --json \
+    "${BACKUP_PATHS[@]}" > "$METRICS_FILE" 2>>"$LOG_FILE" || BACKUP_STATUS=$?
+
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+if [ $BACKUP_STATUS -eq 0 ]; then
+    log_message "INFO" "Restic Backup สำเร็จในเวลา $DURATION วินาที"
+    
+    # ดึงสถิติจากการรันเก็บไว้ใน Log (ใช้ jq)
+    if command -v jq &> /dev/null && [ -f "$METRICS_FILE" ]; then
+        # ดึงสรุปผลบรรทัดสุดท้ายที่เป็น type summary
+        SUMMARY=$(jq -r 'select(.type=="summary")' "$METRICS_FILE")
+        if [ -n "$SUMMARY" ]; then
+            FILES_NEW=$(echo "$SUMMARY" | jq '.files_new')
+            FILES_CHANGED=$(echo "$SUMMARY" | jq '.files_changed')
+            DATA_ADDED_BYTES=$(echo "$SUMMARY" | jq '.data_added')
+            TOTAL_BYTES=$(echo "$SUMMARY" | jq '.total_bytes_processed')
+            SNAPSHOT_ID=$(echo "$SUMMARY" | jq -r '.snapshot_id')
+            
+            # แปลงขนาดเป็นหน่วยอ่านง่าย
+            DATA_ADDED=$(numfmt --to=iec-binary --suffix=B "$DATA_ADDED_BYTES" 2>/dev/null || echo "$DATA_ADDED_BYTES bytes")
+            TOTAL_SIZE=$(numfmt --to=iec-binary --suffix=B "$TOTAL_BYTES" 2>/dev/null || echo "$TOTAL_BYTES bytes")
+            
+            log_message "INFO" "Snapshot ID: $SNAPSHOT_ID"
+            log_message "INFO" "ไฟล์ใหม่: $FILES_NEW, ไฟล์แก้ไข: $FILES_CHANGED"
+            log_message "INFO" "ขนาดข้อมูลที่เพิ่มใหม่: $DATA_ADDED (จากขนาดรวมทั้งหมด: $TOTAL_SIZE)"
+            
+            # บันทึกขนาดข้อมูลดิบลงใน log เพื่อตรวจสอบภายหลัง
+            echo "SIZE_ADDED_BYTES=$DATA_ADDED_BYTES" >> "$LOG_FILE"
+            echo "SIZE_TOTAL_BYTES=$TOTAL_BYTES" >> "$LOG_FILE"
+            echo "SNAPSHOT_ID=$SNAPSHOT_ID" >> "$LOG_FILE"
+            echo "DURATION_SECONDS=$DURATION" >> "$LOG_FILE"
+        fi
+    fi
+else
+    log_message "ERROR" "Restic Backup ล้มเหลว! (Exit Code: $BACKUP_STATUS)"
+    # คืนค่า error ออกไปเพื่อแจ้งเตือน
+    exit "$BACKUP_STATUS"
+fi
+
+# -------------------------------------------------------------
+# นโยบายการเก็บรักษาข้อมูล (Retention Policy - forget & prune)
+# -------------------------------------------------------------
+log_message "INFO" "กำลังรัน restic forget (Retention Policy)..."
+FORGET_STATUS=0
+restic forget \
+    --option rclone.program=rclone \
+    --option rclone.args="config disconnect" \
+    --keep-daily={{ retention_keep_daily }} \
+    --keep-weekly={{ retention_keep_weekly }} \
+    --keep-monthly={{ retention_keep_monthly }} \
+    {% if restic_prune_after_forget | bool %}--prune{% endif %} >> "$LOG_FILE" 2>&1 || FORGET_STATUS=$?
+
+if [ $FORGET_STATUS -eq 0 ]; then
+    log_message "INFO" "จัดระเบียบข้อมูลเก่าสำเร็จ (Retention Applied)"
+else
+    log_message "WARNING" "การทำ forget/prune มีข้อผิดพลาดบางประการ (Exit Code: $FORGET_STATUS)"
+fi
+
+# -------------------------------------------------------------
+# การตรวจสอบความถูกต้อง (Repository Check)
+# -------------------------------------------------------------
+{% if restic_check_after_backup | bool %}
+log_message "INFO" "กำลังตรวจสอบความถูกต้องของ Repository (restic check)..."
+CHECK_STATUS=0
+restic check \
+    --option rclone.program=rclone \
+    --option rclone.args="config disconnect" >> "$LOG_FILE" 2>&1 || CHECK_STATUS=$?
+
+if [ $CHECK_STATUS -eq 0 ]; then
+    log_message "INFO" "Repository สมบูรณ์ดี (Check Passed)"
+else
+    log_message "ERROR" "พบปัญหากับ Repository สมบูรณ์แบบ (Check Failed) (Exit Code: $CHECK_STATUS)"
+    exit "$CHECK_STATUS"
+fi
+{% endif %}
+
+log_message "INFO" "================= เสร็จสิ้นกระบวนการสำรองข้อมูลทั้งหมด ================="
+echo "BACKUP_STATUS=SUCCESS" >> "$LOG_FILE"
+exit 0

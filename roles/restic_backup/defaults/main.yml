@@ -1,0 +1,77 @@
+---
+# =============================================================================
+# roles/restic_backup/defaults/main.yml
+# ค่าเริ่มต้น (Default Variables) สำหรับ Restic Backup Role
+# =============================================================================
+# ไฟล์นี้กำหนดค่าเริ่มต้นที่สามารถ override ได้จาก:
+#   - group_vars/ หรือ host_vars/
+#   - playbook vars:
+#   - command line (-e "var=value")
+# ลำดับความสำคัญ (precedence): defaults < group_vars < host_vars < playbook vars < CLI
+# =============================================================================
+
+# --- แท็กสำหรับ Snapshot ---
+# แท็กที่ใช้ระบุประเภทของการ backup (เช่น 'full', 'incremental', 'manual')
+# ช่วยในการค้นหาและจัดการ snapshot ภายหลัง
+restic_backup_tag: 'full'
+
+# --- ระดับ Verbose ของ Restic ---
+# กำหนดระดับความละเอียดของ output จาก restic
+# 0 = เงียบ (quiet), 1 = ปกติ, 2 = ละเอียด, 3 = ละเอียดมาก
+# ค่า 1 เหมาะสำหรับ production เพราะแสดงข้อมูลสำคัญโดยไม่รกเกินไป
+restic_verbose_level: 1
+
+# --- รายการ Pattern ที่ต้องการยกเว้นจากการ Backup ---
+# ไฟล์/โฟลเดอร์ที่ตรงกับ pattern เหล่านี้จะไม่ถูก backup
+# ช่วยประหยัดพื้นที่และเวลาโดยข้ามไฟล์ที่ไม่จำเป็น:
+#   *.tmp, *.log   = ไฟล์ชั่วคราวและ log ที่สร้างใหม่ได้
+#   *.swp          = ไฟล์ swap ของ vim editor
+#   .DS_Store      = ไฟล์ metadata ของ macOS (ไม่จำเป็นบน Linux)
+#   node_modules   = dependencies ของ Node.js (ติดตั้งใหม่ได้จาก package.json)
+#   __pycache__    = bytecode cache ของ Python (สร้างใหม่ได้อัตโนมัติ)
+restic_exclude_patterns:
+  - '*.tmp'
+  - '*.log'
+  - '*.swp'
+  - '.DS_Store'
+  - 'node_modules'
+  - '__pycache__'
+
+# --- ตรวจสอบ Repository หลัง Backup ---
+# ถ้าเป็น true จะรัน `restic check` หลังจาก backup เสร็จ
+# เพื่อตรวจสอบความสมบูรณ์ของข้อมูลใน repository
+# หมายเหตุ: การ check ใช้เวลาเพิ่ม แต่ช่วยตรวจจับ corruption ได้เร็ว
+restic_check_after_backup: true
+
+# --- Prune หลัง Forget ---
+# ถ้าเป็น true จะรัน --prune พร้อมกับ `restic forget`
+# เพื่อลบข้อมูลที่ไม่ได้ใช้แล้วออกจาก repository ทันที
+# ช่วยประหยัดพื้นที่บน Google Drive แต่ใช้เวลาเพิ่มขึ้น
+restic_prune_after_forget: true
+
+# --- Retention Policy (นโยบายการเก็บรักษา Snapshot) ---
+# กำหนดจำนวน snapshot ที่ต้องเก็บไว้ในแต่ละช่วงเวลา
+# restic forget จะลบ snapshot ที่เกินจำนวนที่กำหนดโดยอัตโนมัติ
+# ค่าเหล่านี้ควรถูก override จาก group_vars/all.yml
+retention_keep_daily: 7       # เก็บ snapshot รายวันย้อนหลัง 7 วัน
+retention_keep_weekly: 4      # เก็บ snapshot รายสัปดาห์ย้อนหลัง 4 สัปดาห์
+retention_keep_monthly: 6     # เก็บ snapshot รายเดือนย้อนหลัง 6 เดือน
+
+# --- Paths ที่ต้อง Backup ---
+# ค่าเริ่มต้นเป็น list ว่าง เพราะจะถูกสร้างอัตโนมัติจาก role อื่นๆ
+# (docker_backup, config_backup, database_backup)
+# สามารถเพิ่ม path เพิ่มเติมได้ที่นี่
+restic_extra_backup_paths: []
+
+# --- Log Directory ---
+# ตำแหน่งที่เก็บ log ไฟล์ของการ backup
+backup_log_dir: '/var/log/backup'
+
+# --- Restic Environment File ---
+# ตำแหน่งไฟล์ที่เก็บ environment variables สำหรับ restic
+# (RESTIC_REPOSITORY, RESTIC_PASSWORD, RCLONE_CONFIG ฯลฯ)
+restic_env_file: '/etc/restic/restic.env'
+
+# --- Backup Wrapper Script ---
+# ตำแหน่งที่จะวาง wrapper script สำหรับ cron job
+backup_wrapper_script: '/usr/local/bin/backup-wrapper.sh'

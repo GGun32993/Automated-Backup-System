@@ -1,0 +1,31 @@
+---
+# =====================================================================
+# roles/common/defaults/main.yml
+# =====================================================================
+# ค่า default ของ role common
+#
+# ทำไมต้องใส่ค่า default:
+#   - ให้ role ใช้งานได้เลยโดยไม่ต้อง configure อะไรเพิ่ม
+#   - ค่าเหล่านี้สามารถ override ได้จาก:
+#     1. group_vars/  (ระดับ group)
+#     2. host_vars/   (ระดับ host)
+#     3. playbook vars (ระดับ play)
+#     4. command line -e (ระดับสูงสุด)
+#   - Ansible variable precedence: defaults มีลำดับต่ำสุด
+#     ⇒ override ได้ง่ายจากทุกที่
+# =====================================================================
+
+# ----- ข้อมูล Backup User -----
+# ใช้ dedicated user แทน root เพื่อความปลอดภัย
+backup_user: "backupuser"
+backup_group: "backupgroup"
+
+# ----- โครงสร้าง Directory -----
+# backup_base_dir: ฐานหลัก เก็บทุกอย่างที่เกี่ยวกับ backup
+# backup_temp_dir: เก็บไฟล์ชั่วคราว (db dump, compressed files) ระหว่าง backup
+# backup_log_dir: เก็บ log files แยกตามวันที่
+# restic_cache_dir: cache ของ restic ช่วยเร่งความเร็วการ backup
+backup_base_dir: "/opt/backup"
+backup_temp_dir: "/opt/backup/tmp"
+backup_log_dir: "/opt/backup/logs"
+restic_cache_dir: "/opt/backup/.cache/restic"

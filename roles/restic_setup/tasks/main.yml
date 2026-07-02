@@ -1,0 +1,164 @@
+---
+# =============================================================================
+# roles/restic_setup/tasks/main.yml
+# Tasks สำหรับติดตั้งและตั้งค่า Restic + Rclone
+# =============================================================================
+
+# ----- ส่วนที่ 1: ตรวจสอบความพร้อมของ Restic -----
+- name: "ตรวจสอบว่ามี Restic ติดตั้งอยู่แล้วหรือไม่"
+  ansible.builtin.command: restic version
+  register: restic_check
+  failed_when: false
+  changed_when: false
+  tags:
+    - restic
+    - install
+
+# ----- ส่วนที่ 2: ดาวน์โหลดและติดตั้ง Restic (ถ้ายังไม่มี หรือต้องการอัปเดต) -----
+# ดาวน์โหลด binary ตรงจาก GitHub Releases ของ Restic
+# วิธีนี้ทำให้ได้ restic เวอร์ชันล่าสุด (v0.17.x ขึ้นไปมีฟังก์ชัน Compression)
+- name: "ดาวน์โหลด Restic"
+  ansible.builtin.get_url:
+    url: "https://github.com/restic/restic/releases/download/v{{ restic_version }}/restic_{{ restic_version }}_linux_{{ restic_arch }}.bz2"
+    dest: "{{ backup_temp_dir }}/restic_{{ restic_version }}.bz2"
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0644"
+  when: restic_check.rc != 0 or (restic_version not in restic_check.stdout)
+  become: true
+  tags:
+    - restic
+    - install
+
+- name: "แตกไฟล์ bzip2 ของ Restic"
+  ansible.builtin.shell: "bunzip2 -c {{ backup_temp_dir }}/restic_{{ restic_version }}.bz2 > /usr/local/bin/restic"
+  args:
+    creates: /usr/local/bin/restic
+  when: restic_check.rc != 0 or (restic_version not in restic_check.stdout)
+  become: true
+  tags:
+    - restic
+    - install
+
+- name: "ตั้งค่า Permission ให้ restic binary"
+  ansible.builtin.file:
+    path: /usr/local/bin/restic
+    owner: root
+    group: "{{ backup_group }}"
+    mode: "0755"
+  become: true
+  tags:
+    - restic
+    - install
+
+# เทคนิคความปลอดภัย: การใช้ Capabilities
+# สั่งให้ restic สามารถอ่านไฟล์ทั้งหมดเพื่อสำรองข้อมูลได้โดยไม่ต้องรันเป็น root
+# (Linux capability: cap_dac_read_search)
+- name: "ตั้งค่า Capabilities ให้ restic (ช่วยให้อ่านไฟล์ได้โดยไม่ต้องใช้สิทธิ์ root)"
+  community.general.capabilities:
+    path: /usr/local/bin/restic
+    capability: cap_dac_read_search+ep
+    state: present
+  become: true
+  ignore_errors: yes # ป้องกันกรณีเครื่องปลายทางเป็น container ที่ไม่รองรับ setcap
+  tags:
+    - restic
+    - install
+    - security
+
+# ----- ส่วนที่ 3: ติดตั้ง Rclone -----
+# Rclone ใช้สำหรับการเชื่อมต่อและโอนย้ายไฟล์กับ Google Drive
+- name: "ติดตั้ง Rclone จาก Repository หลัก"
+  ansible.builtin.apt:
+    name: rclone
+    state: present
+  become: true
+  tags:
+    - rclone
+    - install
+
+# ----- ส่วนที่ 4: ตั้งค่าคอนฟิกูเรชัน -----
+- name: "สร้างโฟลเดอร์สำหรับเก็บ Rclone Config"
+  ansible.builtin.file:
+    path: "{{ rclone_config_dir }}"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0700"
+  become: true
+  tags:
+    - rclone
+    - config
+
+- name: "เขียนไฟล์ rclone.conf"
+  ansible.builtin.template:
+    src: rclone.conf.j2
+    dest: "{{ rclone_config_file }}"
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0600"
+  become: true
+  tags:
+    - rclone
+    - config
+
+- name: "สร้างโฟลเดอร์สำหรับเก็บ Restic Config (เช่น /etc/restic)"
+  ansible.builtin.file:
+    path: "{{ restic_env_file | dirname }}"
+    state: directory
+    owner: root
+    group: "{{ backup_group }}"
+    mode: "0750"
+  become: true
+  tags:
+    - restic
+    - config
+
+- name: "เขียนไฟล์ restic.env"
+  ansible.builtin.template:
+    src: restic-env.sh.j2
+    dest: "{{ restic_env_file }}"
+    owner: root
+    group: "{{ backup_group }}"
+    mode: "0640" # ให้ root เขียนได้ และกลุ่ม backup อ่านได้เพื่อนำไปใช้รัน
+  become: true
+  tags:
+    - restic
+    - config
+
+# ----- ส่วนที่ 5: เริ่มต้นตั้งค่า Restic Repository (Init Repo) -----
+# ตรวจสอบก่อนว่า Repository นี้เคยถูกสร้างไว้หรือยัง
+# ถ้ายังไม่เคย (รันคำสั่งเช็คแล้วล้มเหลว) จะทำ restic init ทันที
+- name: "ตรวจสอบสถานะ Restic Repository บน Google Drive"
+  ansible.builtin.command: "restic -r {{ restic_repo }} --option rclone.program=rclone --option rclone.args='config disconnect' check"
+  environment:
+    RESTIC_PASSWORD: "{{ restic_password }}"
+    RCLONE_CONFIG: "{{ rclone_config_file }}"
+  register: repo_check
+  failed_when: false
+  changed_when: false
+  become: true
+  become_user: "{{ backup_user }}"
+  tags:
+    - restic
+    - init
+
+- name: "เริ่มสร้าง Restic Repository ใหม่บน Google Drive (ถ้ายังไม่มี)"
+  ansible.builtin.command: "restic -r {{ restic_repo }} init"
+  environment:
+    RESTIC_PASSWORD: "{{ restic_password }}"
+    RCLONE_CONFIG: "{{ rclone_config_file }}"
+  when: repo_check.rc != 0
+  become: true
+  become_user: "{{ backup_user }}"
+  tags:
+    - restic
+    - init
+
+- name: "ลบไฟล์ดาวน์โหลดชั่วคราว"
+  ansible.builtin.file:
+    path: "{{ backup_temp_dir }}/restic_{{ restic_version }}.bz2"
+    state: absent
+  become: true
+  tags:
+    - cleanup

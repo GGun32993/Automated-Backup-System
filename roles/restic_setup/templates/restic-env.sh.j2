@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# =============================================================================
+# roles/restic_setup/templates/restic-env.sh.j2
+# ไฟล์ Environment Variables สำหรับ Restic
+# ไฟล์นี้จะถูก source ก่อนรันคำสั่ง restic เพื่อตั้งค่า repo, password, cache
+# =============================================================================
+
+# ป้องกันไม่ให้แชร์ค่านี้แก่ user อื่น (แนะนำสิทธิ์ 0600)
+export RESTIC_REPOSITORY="{{ restic_repo }}"
+export RESTIC_PASSWORD="{{ restic_password }}"
+export RESTIC_CACHE_DIR="{{ restic_cache_dir }}"
+export RCLONE_CONFIG="{{ rclone_config_file }}"
+
+# โหลดค่าเพิ่มเติมเผื่อต้องการ debug หรือปรับแต่งการเชื่อมต่อ
+# export RESTIC_COMPRESSION=auto (restic v0.14.0 ขึ้นไปจะบีบอัดข้อมูลอัตโนมัติ)

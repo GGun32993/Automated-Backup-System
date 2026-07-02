@@ -1,0 +1,41 @@
+---
+# =====================================================================
+# roles/common/handlers/main.yml
+# =====================================================================
+# Handlers = งานที่จะรันเฉพาะเมื่อมี task แจ้งว่า "changed" เท่านั้น
+#
+# ทำไมต้องใช้ handler แทน task ธรรมดา:
+#   - ประหยัดเวลา: ไม่ต้อง restart service ทุกครั้งที่รัน playbook
+#   - รัน handler แค่ครั้งเดียว แม้จะมีหลาย task เรียกใช้
+#   - handler จะรันท้ายสุดของ play (หลัง tasks ทั้งหมดเสร็จ)
+#     ⇒ ป้องกันการ restart ซ้ำหลายรอบ
+#
+# วิธีเรียกใช้ handler จาก task:
+#   ใส่ notify: "ชื่อ handler" ใน task ที่ต้องการ
+#   เช่น notify: "รีสตาร์ท cron service"
+# =====================================================================
+
+# ----- Handler: รีสตาร์ท Cron Service -----
+# เมื่อไหร่ที่ต้อง restart cron:
+#   - เมื่อเปลี่ยนแปลง cron configuration
+#   - เมื่อเพิ่ม/ลบ cron job
+#   - เมื่ออัปเดต crontab ของ user
+#
+# ทำไมต้อง restart แทน reload:
+#   - cron service บน Debian/Ubuntu รองรับ restart ได้ดี
+#   - restart จะอ่าน config ใหม่ทั้งหมด ปลอดภัยกว่า
+#   - process เร็วมาก ไม่กระทบ performance
+- name: "รีสตาร์ท cron service"
+  ansible.builtin.service:
+    name: cron
+    state: restarted
+  become: true
+
+# ----- Handler: รีโหลด systemd -----
+# ใช้เมื่อมีการเปลี่ยนแปลง systemd unit files
+# systemd ต้อง reload daemon ก่อนถึงจะเห็น unit file ใหม่
+# (เตรียมไว้สำหรับ role อื่นที่อาจสร้าง systemd service/timer)
+- name: "รีโหลด systemd daemon"
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true

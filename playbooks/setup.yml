@@ -1,0 +1,42 @@
+---
+# =============================================================================
+# playbooks/setup.yml
+# Playbook สำหรับการติดตั้งและตั้งค่าเริ่มต้นให้กับเครื่องเป้าหมายทั้งหมด
+# =============================================================================
+# ใช้ในการรันครั้งแรก เพื่อติดตั้ง restic, rclone, และเตรียม user
+#
+# วิธีรันเฉพาะ playbook นี้:
+#   ansible-playbook -i inventory/hosts.yml playbooks/setup.yml --ask-vault-pass
+# =============================================================================
+
+- name: "เริ่มต้นติดตั้งและกำหนดค่าระบบ Backup ให้เครื่องเป้าหมาย"
+  hosts: proxmox:docker_hosts
+  become: yes
+  
+  # โหลดความลับจาก Vault
+  vars_files:
+    - ../vault/secrets.yml
+
+  pre_tasks:
+    - name: "ทดสอบการเชื่อมต่อเครือข่ายไปยังเครื่องเป้าหมาย"
+      ansible.builtin.ping:
+      tags:
+        - setup
+        - ping
+
+  roles:
+    - role: common
+      tags:
+        - common
+        - setup
+    - role: restic_setup
+      tags:
+        - restic
+        - setup
+
+  post_tasks:
+    - name: "แสดงข้อความเมื่อเสร็จสิ้นการตั้งค่าเริ่มต้น"
+      ansible.builtin.debug:
+        msg: "เสร็จสิ้นการติดตั้ง Restic และ Rclone บนเครื่อง {{ inventory_hostname }} เรียบร้อยแล้ว!"
+      tags:
+        - setup

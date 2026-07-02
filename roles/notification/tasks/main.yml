@@ -1,0 +1,34 @@
+---
+# =============================================================================
+# roles/notification/tasks/main.yml
+# Tasks สำหรับส่งการแจ้งเตือนไปยัง Discord Webhook
+# =============================================================================
+
+- name: "ส่งรายงานแจ้งเตือนไปยัง Discord"
+  block:
+    - name: "ส่ง HTTP POST Request ไปยัง Discord Webhook"
+      ansible.builtin.uri:
+        url: "{{ discord_webhook_url }}"
+        method: POST
+        body_format: json
+        body: "{{ lookup('template', 'discord-payload.json.j2') | from_json }}"
+        status_code: [204, 200]
+      delegate_to: localhost # ทำงานจาก Control Node เสมอเพื่อความเสถียรและความปลอดภัย
+      ignore_errors: yes # แจ้งเตือนพังต้องไม่ทำให้ workflow หลักล้มเหลว
+      tags:
+        - notification
+        - discord
+
+  # หากการส่ง Discord Webhook ล้มเหลว ให้แสดง error ใน ansible log แต่ไม่หยุดการทำงาน
+  rescue:
+    - name: "แจ้งเตือนข้อผิดพลาดการส่ง Webhook ลง Log"
+      ansible.builtin.debug:
+        msg: "ไม่สามารถส่งแจ้งเตือนไปยัง Discord ได้ กรุณาตรวจสอบสิทธิ์การเข้าถึง หรืออินเทอร์เน็ตของ Control Node"
+      tags:
+        - notification
+        - discord
+  
+  when: discord_webhook_url is defined and discord_webhook_url != ""
+  tags:
+    - notification
+    - discord

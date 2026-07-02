@@ -1,0 +1,92 @@
+---
+# =============================================================================
+# roles/restic_backup/tasks/main.yml
+# Tasks สำหรับเขียนสคริปต์ Backup Wrapper และรันการสำรองข้อมูล Restic
+# =============================================================================
+
+# รวบรวมทุก path ที่ผ่านการประเมินจาก role ก่อนหน้า
+- name: "รวบรวม Paths ทั้งหมดที่จะใช้สำรองข้อมูล"
+  ansible.builtin.set_fact:
+    backup_paths: "{{ (docker_backup_paths | default([])) + (valid_config_paths | default([])) + (database_backup_paths | default([])) + (restic_extra_backup_paths | default([])) }}"
+  tags:
+    - restic
+    - backup
+
+- name: "สร้างไฟล์ .restic-excludes สำหรับกำหนดประเภทไฟล์ที่ไม่ backup"
+  ansible.builtin.copy:
+    content: "{{ restic_exclude_patterns | join('\n') }}"
+    dest: "{{ backup_base_dir }}/.restic-excludes"
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0640"
+  become: true
+  tags:
+    - restic
+    - backup
+
+- name: "แสดงรายการ Paths ทั้งหมดที่รวบรวมได้"
+  ansible.builtin.debug:
+    msg: "รายการที่ระบุสำหรับการ backup: {{ backup_paths }}"
+  tags:
+    - restic
+    - backup
+
+- name: "สร้างสคริปต์หลักสำหรับทำงาน Restic Backup (Backup Wrapper)"
+  ansible.builtin.template:
+    src: backup-wrapper.sh.j2
+    dest: "{{ backup_wrapper_script }}"
+    owner: root
+    group: "{{ backup_group }}"
+    mode: "0750" # ให้ root และกลุ่ม backup รันได้เท่านั้น
+  become: true
+  tags:
+    - restic
+    - backup
+
+# -------------------------------------------------------------
+# รัน Backup Wrapper
+# -------------------------------------------------------------
+- name: "ดำเนินการรันสคริปต์ Backup (รันคำสั่ง Restic)"
+  ansible.builtin.command: "{{ backup_wrapper_script }}"
+  become: true
+  # รันเป็น root เพื่อให้อ่านไฟล์ config สำคัญระบบได้ทั้งหมด
+  # restic จะจัดการความปลอดภัยในตัวเอง
+  register: backup_execution
+  tags:
+    - restic
+    - backup
+
+# -------------------------------------------------------------
+# ดึงสถิติผลลัพธ์เก็บเป็น Ansible Facts
+# -------------------------------------------------------------
+# ดึงข้อมูลจาก log ล่าสุดเพื่อไปแสดงใน Discord Webhook
+- name: "ตรวจสอบ Log ผลลัพธ์เพื่อนำข้อมูลสถิติออกมาวิเคราะห์"
+  ansible.builtin.shell: |
+    LOG_FILE="{{ backup_log_dir }}/backup-$(date +%Y-%m-%d).log"
+    if [ -f "$LOG_FILE" ]; then
+      snapshot_id=$(grep "SNAPSHOT_ID=" "$LOG_FILE" | cut -d'=' -f2 | tail -n 1)
+      size_added=$(grep "SIZE_ADDED_BYTES=" "$LOG_FILE" | cut -d'=' -f2 | tail -n 1)
+      size_total=$(grep "SIZE_TOTAL_BYTES=" "$LOG_FILE" | cut -d'=' -f2 | tail -n 1)
+      duration=$(grep "DURATION_SECONDS=" "$LOG_FILE" | cut -d'=' -f2 | tail -n 1)
+      
+      # แปลงขนาดเป็นหน่วยอ่านง่าย
+      size_added_friendly=$(numfmt --to=iec-binary --suffix=B "$size_added" 2>/dev/null || echo "$size_added bytes")
+      size_total_friendly=$(numfmt --to=iec-binary --suffix=B "$size_total" 2>/dev/null || echo "$size_total bytes")
+      
+      echo "{\"snapshot_id\": \"$snapshot_id\", \"size_added\": \"$size_added_friendly\", \"size_total\": \"$size_total_friendly\", \"duration\": \"${duration}s\"}"
+    else
+      echo "{\"snapshot_id\": \"N/A\", \"size_added\": \"N/A\", \"size_total\": \"N/A\", \"duration\": \"N/A\"}"
+    fi
+  register: parsed_metrics_raw
+  become: true
+  changed_when: false
+  tags:
+    - restic
+    - backup
+
+- name: "แปลงผลลัพธ์เป็น JSON Object"
+  ansible.builtin.set_fact:
+    backup_metrics: "{{ parsed_metrics_raw.stdout | from_json }}"
+  tags:
+    - restic
+    - backup

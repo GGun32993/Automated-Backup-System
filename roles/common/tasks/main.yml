@@ -1,0 +1,202 @@
+---
+# =====================================================================
+# roles/common/tasks/main.yml
+# =====================================================================
+# บทบาท (Role) พื้นฐานสำหรับเตรียมเครื่องให้พร้อมรันระบบ Backup
+#
+# ทำอะไรบ้าง:
+#   1. อัปเดต apt cache เพื่อให้ได้ package list ล่าสุด
+#   2. ติดตั้ง package ที่จำเป็น (curl, jq, gnupg ฯลฯ)
+#   3. สร้าง user/group สำหรับ backup โดยเฉพาะ
+#   4. สร้างโครงสร้าง directory ที่ต้องใช้
+#   5. สร้าง SSH key pair สำหรับ backup user
+#
+# ทำไมต้องแยก role นี้ออกมา:
+#   - เพราะทุกเครื่องในระบบ backup ต้องมีพื้นฐานเหมือนกัน
+#   - แยก concern ให้ชัดเจน: common = สิ่งที่ทุกเครื่องต้องมี
+#   - ทำให้ reuse ได้ง่าย ไม่ต้องเขียนซ้ำ
+# =====================================================================
+
+# ----- ส่วนที่ 1: อัปเดต APT Cache -----
+# ทำไมต้องอัปเดต:
+#   - เพื่อให้ apt รู้จัก package เวอร์ชันล่าสุด
+#   - ป้องกันปัญหา "package not found" เมื่อลง package ใหม่
+#   - cache_valid_time=3600 = ถ้าอัปเดตไปแล้วภายใน 1 ชั่วโมง จะไม่อัปเดตซ้ำ
+#     (ประหยัดเวลาเวลารัน playbook หลายรอบ)
+- name: "อัปเดต APT cache"
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  become: true
+  tags:
+    - common
+    - packages
+
+# ----- ส่วนที่ 2: ติดตั้ง Package ที่จำเป็น -----
+# แต่ละ package มีหน้าที่ดังนี้:
+#   - curl:           ดาวน์โหลดไฟล์จาก internet (ใช้ตอนลง restic)
+#   - jq:             แปลง/อ่าน JSON (ใช้ใน backup script ดึงข้อมูล)
+#   - gnupg:          ตรวจสอบ GPG signature ของ package (ความปลอดภัย)
+#   - openssh-client: ใช้ SSH เชื่อมต่อไปเครื่องอื่น (remote backup)
+#   - python3-pip:    จัดการ Python package (dependency ของ Ansible modules บางตัว)
+#   - acl:            จัดการ Access Control Lists บน filesystem
+#                     (จำเป็นสำหรับ Ansible become_user ใช้ setfacl)
+#   - cron:           ตัวจัดการ cron jobs (ตั้งเวลารัน backup อัตโนมัติ)
+#   - logrotate:      หมุนเวียน log files อัตโนมัติ (ป้องกัน disk เต็ม)
+- name: "ติดตั้ง package พื้นฐานที่จำเป็น"
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+  become: true
+  # ใช้ตัวแปร common_packages เพื่อให้ override ค่าได้ง่ายจาก defaults หรือ vars
+  vars:
+    common_packages:
+      - curl
+      - jq
+      - gnupg
+      - openssh-client
+      - python3-pip
+      - acl
+      - cron
+      - logrotate
+  tags:
+    - common
+    - packages
+
+# ----- ส่วนที่ 3: สร้าง Group สำหรับ Backup -----
+# ทำไมต้องสร้าง group แยก:
+#   - หลักการ Least Privilege: ให้สิทธิ์น้อยที่สุดเท่าที่จำเป็น
+#   - group แยกทำให้ควบคุมการเข้าถึงไฟล์ backup ได้ง่าย
+#   - system group (system: true) จะได้ GID ต่ำกว่า 1000
+#     แสดงว่าเป็น service account ไม่ใช่ user จริง
+- name: "สร้าง group สำหรับ backup"
+  ansible.builtin.group:
+    name: "{{ backup_group }}"
+    state: present
+    system: true
+  become: true
+  tags:
+    - common
+    - user
+
+# ----- ส่วนที่ 4: สร้าง User สำหรับ Backup -----
+# ทำไมต้องสร้าง user แยก:
+#   - ไม่ควรรัน backup ด้วย root เพราะอันตราย
+#   - ถ้ามี security breach จะจำกัดความเสียหายได้
+#   - shell: /bin/bash เพราะ backup script ต้องใช้ bash features
+#   - home directory อยู่ที่ backup_base_dir เพื่อให้ทุกอย่างอยู่ที่เดียว
+#   - create_home: true เพื่อให้ Ansible สร้าง home directory ให้อัตโนมัติ
+- name: "สร้าง user สำหรับ backup"
+  ansible.builtin.user:
+    name: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    home: "{{ backup_base_dir }}"
+    shell: /bin/bash
+    system: true
+    create_home: true
+    comment: "Automated Backup Service Account"
+  become: true
+  tags:
+    - common
+    - user
+
+# ----- ส่วนที่ 5: สร้าง Directory Structure -----
+# โครงสร้าง directory ที่ต้องการ:
+#   /opt/backup/              (backup_base_dir)  - ฐานหลักของทุกอย่าง
+#   /opt/backup/tmp/          (backup_temp_dir)  - เก็บไฟล์ชั่วคราวระหว่าง backup
+#   /opt/backup/logs/         (backup_log_dir)   - เก็บ log files
+#   /opt/backup/.cache/restic (restic_cache_dir) - cache ของ restic (เร่งความเร็ว)
+#
+# Permission 0750 หมายความว่า:
+#   - owner (backup user): อ่าน/เขียน/เข้าถึง (rwx)
+#   - group (backup group): อ่าน/เข้าถึง (r-x)
+#   - others: ไม่มีสิทธิ์เลย (---)
+#   ⇒ ป้องกันไม่ให้ user อื่นเห็นข้อมูล backup
+- name: "สร้าง directory structure สำหรับ backup"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0750"
+  become: true
+  loop:
+    - "{{ backup_base_dir }}"
+    - "{{ backup_temp_dir }}"
+    - "{{ backup_log_dir }}"
+    - "{{ restic_cache_dir }}"
+  # loop จะวนสร้างทุก directory ใน list
+  # ถ้า directory มีอยู่แล้วจะแค่ตรวจสอบ permission (idempotent)
+  tags:
+    - common
+    - directories
+
+# ----- ส่วนที่ 6: สร้าง .ssh Directory -----
+# ทำไมต้องมี .ssh directory:
+#   - เก็บ SSH key pair ของ backup user
+#   - Permission 0700 เข้มงวดกว่า directory อื่น
+#     เพราะ SSH key เป็นความลับสำคัญ
+#   - ถ้า permission ไม่ถูกต้อง SSH จะปฏิเสธไม่ยอมใช้ key
+- name: "สร้าง .ssh directory สำหรับ backup user"
+  ansible.builtin.file:
+    path: "{{ backup_base_dir }}/.ssh"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0700"
+  become: true
+  tags:
+    - common
+    - ssh
+
+# ----- ส่วนที่ 7: สร้าง SSH Key Pair -----
+# ใช้ Ed25519 เพราะ:
+#   - ปลอดภัยกว่า RSA ที่ key size เท่ากัน
+#   - key สั้นกว่า RSA มาก (แต่แข็งแรงเท่ากัน)
+#   - เร็วกว่าในการสร้างและตรวจสอบ signature
+#   - เป็นมาตรฐานใหม่ที่แนะนำโดย OpenSSH
+#
+# comment ใส่ชื่อ user + hostname เพื่อให้รู้ว่า key นี้มาจากเครื่องไหน
+# force: false = ถ้ามี key อยู่แล้วจะไม่สร้างทับ (ป้องกันข้อมูลหาย)
+- name: "สร้าง SSH key pair (Ed25519) สำหรับ backup user"
+  community.crypto.openssh_keypair:
+    path: "{{ backup_base_dir }}/.ssh/id_ed25519"
+    type: ed25519
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    comment: "{{ backup_user }}@{{ ansible_hostname }}"
+    force: false
+  become: true
+  register: backup_ssh_key
+  tags:
+    - common
+    - ssh
+
+# ----- ส่วนที่ 8: แสดง Public Key -----
+# แสดง public key เพื่อให้ admin เอาไปใส่ในเครื่องปลายทาง
+# ถ้าต้องการ SSH ไปเครื่องอื่นเพื่อ backup
+# ใช้ when: backup_ssh_key.changed เพื่อแสดงเฉพาะตอนสร้าง key ใหม่เท่านั้น
+- name: "แสดง SSH public key (เอาไปใส่ในเครื่องปลายทาง)"
+  ansible.builtin.debug:
+    msg: >-
+      SSH Public Key สำหรับ {{ backup_user }}:
+      {{ backup_ssh_key.public_key }}
+  when: backup_ssh_key.changed
+  tags:
+    - common
+    - ssh
+
+# ----- ส่วนที่ 9: ตรวจสอบ cron service ทำงานอยู่ -----
+# ทำไมต้องตรวจสอบ:
+#   - ระบบ backup ใช้ cron เป็นตัวตั้งเวลา
+#   - ถ้า cron ไม่ทำงาน backup จะไม่รันตามเวลา
+#   - enabled: true = ให้ cron เริ่มทำงานอัตโนมัติเมื่อเครื่อง boot
+- name: "ตรวจสอบว่า cron service ทำงานอยู่"
+  ansible.builtin.service:
+    name: cron
+    state: started
+    enabled: true
+  become: true
+  tags:
+    - common
+    - cron

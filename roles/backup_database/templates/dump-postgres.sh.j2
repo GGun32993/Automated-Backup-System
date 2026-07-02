@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# =============================================================================
+# สคริปต์สำรองข้อมูล PostgreSQL Database: {{ item.name }}
+# สร้างโดย Ansible (รันอัตโนมัติ)
+# =============================================================================
+set -euo pipefail
+
+DB_NAME="{{ item.name }}"
+DB_USER="{{ item.user }}"
+DB_PORT="{{ item.port | default(5432) }}"
+DB_HOST="{{ item.host | default('localhost') }}"
+DUMP_DIR="{{ db_dump_dir }}"
+DUMP_FILE="$DUMP_DIR/$DB_NAME-$(date +%Y%m%d%H%M%S).dump"
+LOG_FILE="/var/log/backup/db-backup.log"
+
+# ตรวจสอบโครงสร้างไดเรกทอรี
+mkdir -p "$DUMP_DIR"
+mkdir -p "$(dirname "$LOG_FILE")"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] เริ่มต้น dump PostgreSQL database: $DB_NAME" >> "$LOG_FILE"
+
+# ใช้ PGPASSWORD environment variable เพื่อส่งรหัสผ่านอย่างปลอดภัย
+export PGPASSWORD="{{ item.password }}"
+
+# ตรวจสอบว่า pg_dump ติดตั้งอยู่หรือไม่
+if ! command -v pg_dump &> /dev/null; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: pg_dump ไม่ได้ติดตั้งอยู่บนเครื่องนี้" >> "$LOG_FILE"
+    exit 1
+fi
+
+# ดำเนินการ Backup
+# -Fc = custom format (แนะนำเพราะรองรับการทำงานกับ pg_restore ได้ดีที่สุด)
+if pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -F c -b -v -f "$DUMP_FILE" "$DB_NAME" >> "$LOG_FILE" 2>&1; then
+    FILE_SIZE=$(du -h "$DUMP_FILE" | cut -f1)
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] สำเร็จ: $DB_NAME (ขนาด: $FILE_SIZE)" >> "$LOG_FILE"
+    # ตั้ง permission ให้เฉพาะ owner อ่านได้เพื่อความปลอดภัย
+    chmod 600 "$DUMP_FILE"
+    # บันทึก path ของไฟล์ dump ล่าสุดไว้ให้ Ansible ทราบ
+    echo "$DUMP_FILE" > "$DUMP_DIR/$DB_NAME.latest_path"
+    exit 0
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ล้มเหลว: เกิดข้อผิดพลาดขณะ dump ฐานข้อมูล $DB_NAME" >> "$LOG_FILE"
+    exit 1
+fi

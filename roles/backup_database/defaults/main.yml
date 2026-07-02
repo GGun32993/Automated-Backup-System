@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# roles/backup_database/defaults/main.yml
+# ค่าเริ่มต้นสำหรับ Database Backup Role
+# =============================================================================
+
+# รายการฐานข้อมูลที่ต้องการสำรอง
+# รูปแบบ:
+# backup_databases:
+#   - name: my_postgres_db
+#     type: postgresql
+#     user: postgres
+#     port: 5432
+#     password: "{{ vault_postgres_password }}"
+#   - name: my_sqlite_db
+#     type: sqlite
+#     path: /path/to/db.sqlite
+backup_databases: []
+
+# ไดเรกทอรีเก็บไฟล์ dump ชั่วคราวก่อนสำรองด้วย restic
+db_dump_dir: "{{ backup_temp_dir }}/db-dumps"
+
+# ฟอร์แมตการ dump ของ PostgreSQL (custom เหมาะสำหรับการ restore แบบเจาะจง หรือ directory ก็ได้)
+# -Fc = custom format (บีบอัดในตัว, กู้คืนง่ายผ่าน pg_restore)
+postgres_dump_format: "custom"

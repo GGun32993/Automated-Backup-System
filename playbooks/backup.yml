@@ -1,0 +1,121 @@
+---
+# =============================================================================
+# playbooks/backup.yml
+# Playbook หลักสำหรับการสั่ง Backup ข้อมูลขึ้น Google Drive
+# =============================================================================
+# ใช้สำหรับสั่ง backup ทันทีจาก Control Node หรือใช้เทสสคริปต์ทั้งหมด
+#
+# วิธีใช้งาน:
+#   ansible-playbook -i inventory/hosts.yml playbooks/backup.yml --ask-vault-pass
+# =============================================================================
+
+- name: "เริ่มต้นกระบวนการสำรองข้อมูล (Backup Sequence)"
+  hosts: proxmox:docker_hosts
+  become: yes
+  
+  # โหลดความลับจาก Vault
+  vars_files:
+    - ../vault/secrets.yml
+
+  pre_tasks:
+    # -------------------------------------------------------------
+    # 1. บันทึกวันและเวลาที่เริ่มต้นสำรองข้อมูล
+    # -------------------------------------------------------------
+    - name: "บันทึกเวลาเริ่มต้นรัน Backup"
+      ansible.builtin.set_fact:
+        backup_start_time: "{{ ansible_date_time.iso8601 }}"
+      tags:
+        - backup
+
+    # -------------------------------------------------------------
+    # 2. ตรวจสอบพื้นที่ฮาร์ดดิสก์ก่อนสำรองข้อมูล
+    # -------------------------------------------------------------
+    # ช่วยป้องกันไม่ให้รัน Backup พังกลางทางถ้า Disk เต็ม (เช่น ตอนทำ pg_dump)
+    - name: "ตรวจสอบพื้นที่ว่างบน Disk (ต้องมีพื้นที่ว่างมากกว่า 10%)"
+      ansible.builtin.shell: "df -h / | awk 'NR==2 {print $5}' | sed 's/%//'"
+      register: disk_usage_percent
+      changed_when: false
+      failed_when: false
+      tags:
+        - backup
+        - disk_check
+
+    - name: "แจ้งเตือนหากเนื้อที่ Disk เหลือน้อยกว่าเกณฑ์ที่ปลอดภัย"
+      ansible.builtin.debug:
+        msg: "WARNING: พื้นที่ดิสก์ของเครื่อง {{ inventory_hostname }} ถูกใช้งานไปแล้วถึง {{ disk_usage_percent.stdout }}%"
+      when: disk_usage_percent.rc == 0 and disk_usage_percent.stdout | int > 90
+      tags:
+        - backup
+        - disk_check
+
+  # -------------------------------------------------------------
+  # เริ่มต้นสั่งรัน Roles ต่างๆ ตามลำดับ
+  # -------------------------------------------------------------
+  tasks:
+    - name: "ดำเนินการตามแผนงานสำรองข้อมูลและจัดการแจ้งเตือน"
+      block:
+        # ขั้นที่ 1: ดำเนินการ Dump ข้อมูล Database
+        - name: "รันกระบวนการสำรองข้อมูล Database"
+          ansible.builtin.include_role:
+            name: backup_database
+          when: backup_databases is defined and (backup_databases | length > 0)
+
+        # ขั้นที่ 2: ดำเนินการสำรองข้อมูล Docker ( volumes, config )
+        - name: "รันกระบวนการสำรองข้อมูล Docker"
+          ansible.builtin.include_role:
+            name: backup_docker
+          when: docker_compose_dirs is defined and (docker_compose_dirs | length > 0)
+
+        # ขั้นที่ 3: ดำเนินการค้นหาคอนฟิกูเรชันไฟล์ของระบบ
+        - name: "รันกระบวนการสำรองข้อมูลคอนฟิกูเรชันระบบ"
+          ansible.builtin.include_role:
+            name: backup_configs
+          when: config_backup_paths is defined and (config_backup_paths | length > 0)
+
+        # ขั้นที่ 4: สั่งรันคำสั่ง Restic เพื่อ Backup ข้อมูลทั้งหมด
+        - name: "ดำเนินการบันทึกข้อมูลเข้าสู่ Restic Repository"
+          ansible.builtin.include_role:
+            name: restic_backup
+
+        # ขั้นที่ 5: ตั้งค่าตารางเวลาสำรองข้อมูล (Cron job)
+        - name: "ติดตั้งหรืออัปเดตระบบ Cron Job และ Logrotate"
+          ansible.builtin.include_role:
+            name: scheduling
+
+        - name: "ตั้งค่าสถานะความสำเร็จ"
+          ansible.builtin.set_fact:
+            backup_status: "SUCCESS"
+
+      # -------------------------------------------------------------
+      # ส่วนกู้คืนความเสียหาย กรณีมีขั้นตอนใดๆ พังกลางคัน
+      # -------------------------------------------------------------
+      rescue:
+        - name: "ตั้งค่าสถานะเมื่อเกิดข้อผิดพลาด"
+          ansible.builtin.set_fact:
+            backup_status: "FAILED"
+
+        - name: "แจ้งเตือนการล้มเหลวผ่าน Ansible Console"
+          ansible.builtin.fail:
+            msg: "กระบวนการ Backup บนเครื่อง {{ inventory_hostname }} ล้มเหลว กรุณาตรวจสอบบันทึก Log เพิ่มเติม!"
+
+      # -------------------------------------------------------------
+      # ส่วนที่ต้องรันเสมอ (Always Block) ไม่ว่าจะสำเร็จหรือพัง
+      # -------------------------------------------------------------
+      always:
+        # ส่งการแจ้งเตือน Discord เสมอ (นำเสนอสถิติขนาดไฟล์ ระยะเวลา หรือข้อผิดพลาด)
+        - name: "ส่งรายงานผลลัพธ์ผ่านช่องทาง Discord Webhook"
+          ansible.builtin.include_role:
+            name: notification
+
+        # ทำความสะอาด Temp Files ทุกรอบ เพื่อไม่ให้เครื่องขยะเต็ม
+        - name: "ลบไฟล์ดัมพ์และไฟล์คอนฟิกชั่วคราวบนเครื่อง"
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ db_dump_dir | default(backup_temp_dir ~ '/db-dumps') }}"
+            - "{{ backup_temp_dir }}/docker-configs"
+          become: true
+          failed_when: false
+          tags:
+            - cleanup

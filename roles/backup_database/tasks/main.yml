@@ -1,0 +1,84 @@
+---
+# =============================================================================
+# roles/backup_database/tasks/main.yml
+# Tasks สำหรับรันสคริปต์สำรองข้อมูล Database
+# =============================================================================
+
+- name: "สร้างโฟลเดอร์สำหรับเก็บ Database Dumps ชั่วคราว"
+  ansible.builtin.file:
+    path: "{{ db_dump_dir }}"
+    state: directory
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0750"
+  become: true
+  tags:
+    - database
+    - backup
+
+# -------------------------------------------------------------
+# ส่วนที่ 1: จัดการ PostgreSQL Database Dumps
+# -------------------------------------------------------------
+- name: "เขียนสคริปต์สำหรับ Dump PostgreSQL"
+  ansible.builtin.template:
+    src: dump-postgres.sh.j2
+    dest: "{{ db_dump_dir }}/dump-{{ item.name }}.sh"
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0700"
+  loop: "{{ backup_databases }}"
+  when: item.type == 'postgresql'
+  become: true
+  tags:
+    - database
+    - backup
+
+- name: "สั่งรันสคริปต์ Dump PostgreSQL"
+  ansible.builtin.command: "{{ db_dump_dir }}/dump-{{ item.name }}.sh"
+  loop: "{{ backup_databases }}"
+  when: item.type == 'postgresql'
+  become: true
+  become_user: "{{ backup_user }}"
+  tags:
+    - database
+    - backup
+
+# -------------------------------------------------------------
+# ส่วนที่ 2: จัดการ SQLite Database Dumps
+# -------------------------------------------------------------
+- name: "เขียนสคริปต์สำหรับ Dump SQLite"
+  ansible.builtin.template:
+    src: dump-sqlite.sh.j2
+    dest: "{{ db_dump_dir }}/dump-{{ item.name }}.sh"
+    owner: "{{ backup_user }}"
+    group: "{{ backup_group }}"
+    mode: "0700"
+  loop: "{{ backup_databases }}"
+  when: item.type == 'sqlite'
+  become: true
+  tags:
+    - database
+    - backup
+
+- name: "สั่งรันสคริปต์ Dump SQLite"
+  ansible.builtin.command: "{{ db_dump_dir }}/dump-{{ item.name }}.sh"
+  loop: "{{ backup_databases }}"
+  when: item.type == 'sqlite'
+  become: true
+  become_user: "{{ backup_user }}"
+  tags:
+    - database
+    - backup
+
+# -------------------------------------------------------------
+# ส่วนที่ 3: รวบรวม Paths ของไฟล์ Dump ทั้งหมดเพื่อส่งต่อให้ Restic
+# -------------------------------------------------------------
+# เราจะลงทะเบียน Fact ไดเรกทอรีนี้ เพื่อใช้เรียกใน restic backup role
+- name: "กำหนด Database Dump Paths สำหรับ Restic"
+  ansible.builtin.set_fact:
+    database_backup_paths:
+      - "{{ db_dump_dir }}"
+  when: backup_databases | length > 0
+  tags:
+    - database
+    - backup

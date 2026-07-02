@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# roles/scheduling/tasks/main.yml
+# Tasks สำหรับกำหนดเวลาทำ Backup อัตโนมัติ (Cron Job & Logrotate)
+# =============================================================================
+
+# ----- ส่วนที่ 1: ตั้งค่า Cron Job -----
+# กำหนดงานสำรองข้อมูลอัตโนมัติให้ทำงานทุกวันเวลา 02:00 น.
+# โดยทำการเขียนเป็น cron file แยกต่างหากใน /etc/cron.d/ เพื่อความสะอาดและจัดการง่าย
+- name: "สร้าง Cron Job สำหรับรัน Backup ทุกวัน"
+  ansible.builtin.cron:
+    name: "automated-daily-backup"
+    cron_file: "restic-backup" # สร้างไฟล์ชื่อ /etc/cron.d/restic-backup
+    user: root
+    minute: "{{ backup_schedule_minute | default('0') }}"
+    hour: "{{ backup_schedule_hour | default('2') }}"
+    job: "{{ backup_wrapper_script }} > /dev/null 2>&1"
+    state: present
+  become: true
+  tags:
+    - scheduling
+    - cron
+
+# ----- ส่วนที่ 2: ตั้งค่า Logrotate -----
+# จัดระเบียบ log file ป้องกันพื้นที่เต็ม
+# หมุนไฟล์ทุกๆ สัปดาห์ เก็บย้อนหลังไว้ 12 สัปดาห์ (3 เดือน)
+# ทำการบีบอัดไฟล์เก่า (.gz)
+- name: "ตั้งค่า Logrotate สำหรับ Restic Backup Log"
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/restic-backup
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {{ backup_log_dir }}/*.log {
+          weekly
+          rotate 12
+          compress
+          delaycompress
+          missingok
+          notifempty
+          create 0640 root {{ backup_group }}
+          sharedscripts
+      }
+  become: true
+  tags:
+    - scheduling
+    - logrotate

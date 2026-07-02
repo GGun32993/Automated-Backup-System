@@ -1,0 +1,144 @@
+---
+# =============================================================================
+# playbooks/test-restore.yml
+# Playbook สำหรับทดสอบการกู้คืนไฟล์อัตโนมัติ (Automated Restore Verification)
+# =============================================================================
+# ทำหน้าที่:
+#   1. ดึง snapshot ล่าสุดออกจาก Google Drive
+#   2. กู้คืนลงในพื้นที่ชั่วคราว (/opt/backup/restore-test-temp)
+#   3. ตรวจสอบไฟล์สำคัญตามเงื่อนไข (เช่น โครงสร้าง หรือ database dump)
+#   4. บันทึกผลและแจ้งเตือนผ่าน Discord Webhook
+#   5. ลบโฟลเดอร์ทดสอบหลังทำเสร็จ (Cleanup)
+# =============================================================================
+
+- name: "ทดสอบการกู้คืนไฟล์คืนสู่ระบบอัตโนมัติ"
+  hosts: docker_hosts
+  become: yes
+  vars_files:
+    - ../vault/secrets.yml
+
+  tasks:
+    - name: "กำหนดไดเรกทอรีสำหรับทดสอบ"
+      ansible.builtin.set_fact:
+        test_restore_dir: "{{ backup_base_dir }}/restore-test-temp"
+        test_status: "SUCCESS"
+        test_errors: []
+
+    - name: "สร้างโฟลเดอร์สำหรับทดสอบกู้คืน"
+      ansible.builtin.file:
+        path: "{{ test_restore_dir }}"
+        state: directory
+        owner: "{{ backup_user }}"
+        group: "{{ backup_group }}"
+        mode: "0750"
+
+    # -------------------------------------------------------------
+    # รัน Restore ล่าสุดลง Temp
+    # -------------------------------------------------------------
+    - name: "สั่ง Restic ดำเนินการกู้คืน Snapshot ล่าสุด"
+      ansible.builtin.command: "restic -r {{ restic_repo }} --option rclone.program=rclone --option rclone.args='config disconnect' restore latest --target {{ test_restore_dir }}"
+      environment:
+        RESTIC_PASSWORD: "{{ restic_password }}"
+        RCLONE_CONFIG: "{{ rclone_config_file | default(backup_base_dir ~ '/.config/rclone/rclone.conf') }}"
+      become: true
+      become_user: "{{ backup_user }}"
+      register: restore_exec
+      ignore_errors: yes
+
+    - name: "ตรวจสอบกรณีระบบ Restic กู้คืนข้อมูลล้มเหลว"
+      ansible.builtin.set_fact:
+        test_status: "FAILED"
+        test_errors: "{{ test_errors + ['Restic restore command failed with error: ' ~ restore_exec.stderr] }}"
+      when: restore_exec.rc != 0
+
+    # -------------------------------------------------------------
+    # ตรวจสอบโครงสร้างไฟล์ (Verifications)
+    # -------------------------------------------------------------
+    # หาก restic รันสำเร็จ ให้เช็คความถูกต้องของไฟล์ที่กู้คืนมา
+    - name: "วิเคราะห์โครงสร้างไฟล์ที่กู้คืนมา (กรณี Restic สำเร็จ)"
+      block:
+        # 1. เช็คไฟล์ db-dumps ว่ามีไฟล์ถูกสร้างจริงหรือไม่
+        - name: "ตรวจสอบความคงอยู่ของ Database Dumps"
+          ansible.builtin.find:
+            paths: "{{ test_restore_dir }}{{ db_dump_dir | default(backup_temp_dir ~ '/db-dumps') }}"
+            patterns: "*.dump,*.sqlite"
+          register: found_db_files
+
+        - name: "บันทึกข้อผิดพลาดกรณีไม่พบ db dumps"
+          ansible.builtin.set_fact:
+            test_status: "FAILED"
+            test_errors: "{{ test_errors + ['Database dump files were not found in the restored snapshot'] }}"
+          when: found_db_files.matched == 0
+
+        # 2. เช็ค docker compose files
+        - name: "ตรวจสอบความคงอยู่ของ docker-compose.yml"
+          ansible.builtin.find:
+            paths: "{{ test_restore_dir }}{{ backup_temp_dir }}/docker-configs"
+            patterns: "docker-compose.yml"
+            recurse: yes
+          register: found_compose_files
+
+        - name: "บันทึกข้อผิดพลาดกรณีไม่พบ docker-compose"
+          ansible.builtin.set_fact:
+            test_status: "FAILED"
+            test_errors: "{{ test_errors + ['Docker compose files were not found in the restored snapshot'] }}"
+          when: found_compose_files.matched == 0
+
+      when: restore_exec.rc == 0
+
+    # -------------------------------------------------------------
+    # ส่งข้อความผลทดสอบไปยัง Discord Webhook
+    # -------------------------------------------------------------
+    - name: "ส่งรายงานผลตรวจสอบความพร้อมในการกู้คืนไปยัง Discord"
+      ansible.builtin.uri:
+        url: "{{ discord_webhook_url }}"
+        method: POST
+        body_format: json
+        body: |
+          {
+            "username": "Restore Tester Bot",
+            "avatar_url": "https://i.imgur.com/8ncmfyY.png",
+            "embeds": [
+              {
+                "title": "🔍 รายงานผลการทดสอบการกู้คืนไฟล์ (Restore Test)",
+                "color": {{ 3066993 if test_status == 'SUCCESS' else 15158332 }},
+                "fields": [
+                  {
+                    "name": "🖥️ เครื่องทดสอบ (Host)",
+                    "value": "`{{ inventory_hostname }}`",
+                    "inline": true
+                  },
+                  {
+                    "name": "📊 สถานะการทดสอบ",
+                    "value": "{{ '✅ ผ่านการตรวจสอบ (PASS)' if test_status == 'SUCCESS' else '❌ ไม่ผ่านการตรวจสอบ (FAIL)' }}",
+                    "inline": true
+                  },
+                  {
+                    "name": "📁 ตำแหน่งโฟลเดอร์กู้คืนชั่วคราว",
+                    "value": "`{{ test_restore_dir }}`",
+                    "inline": false
+                  },
+                  {
+                    "name": "❌ บันทึกข้อผิดพลาด (Errors)",
+                    "value": "```\n{{ test_errors | default(['None']) | join('\n') }}\n```",
+                    "inline": false
+                  }
+                ],
+                "footer": {
+                  "text": "Automated Backup System v1.0 • {{ ansible_date_time.iso8601 }}"
+                }
+              }
+            ]
+          }
+      delegate_to: localhost
+      ignore_errors: yes
+      when: discord_webhook_url is defined and discord_webhook_url != ""
+
+    # -------------------------------------------------------------
+    # ทำความสะอาดข้อมูลทดสอบ (Cleanup)
+    # -------------------------------------------------------------
+    - name: "ลบโฟลเดอร์สำหรับกู้คืนข้อมูลทดสอบออกทันที"
+      ansible.builtin.file:
+        path: "{{ test_restore_dir }}"
+        state: absent
+      failed_when: false

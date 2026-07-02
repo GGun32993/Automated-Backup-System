@@ -1,0 +1,177 @@
+---
+# =============================================================================
+# Global Variables - ตัวแปรกลางสำหรับทุกเครื่อง (All Hosts)
+# =============================================================================
+# ไฟล์นี้เก็บตัวแปรที่ใช้ร่วมกันทุกเครื่องในระบบ
+# Ansible จะโหลดตัวแปรเหล่านี้อัตโนมัติเมื่อรัน playbook กับเครื่องใดก็ตาม
+#
+# ลำดับความสำคัญของตัวแปร (Variable Precedence) จากต่ำไปสูง:
+#   1. role defaults        (ต่ำสุด)
+#   2. inventory group_vars (ไฟล์นี้)
+#   3. inventory host_vars
+#   4. playbook vars
+#   5. extra vars (-e)      (สูงสุด)
+#
+# ตัวแปรที่ขึ้นต้นด้วย vault_ จะอ้างอิงไปยังค่าที่เข้ารหัสใน vault/secrets.yml
+# =============================================================================
+
+# =============================================================================
+# 👤 User & Group Settings - ตั้งค่าผู้ใช้และกลุ่ม
+# =============================================================================
+# สร้าง dedicated user สำหรับ backup เพื่อ:
+#   - แยกสิทธิ์การเข้าถึงจาก user อื่น (Principle of Least Privilege)
+#   - ง่ายต่อการ audit ว่า backup process ทำอะไรบ้าง
+#   - สามารถกำหนด sudoers เฉพาะคำสั่งที่จำเป็น
+
+# backup_user - ชื่อ user ที่จะใช้รันระบบ backup
+backup_user: backup
+
+# backup_group - ชื่อ group ของ backup user
+backup_group: backup
+
+# =============================================================================
+# 📁 Directory Settings - ตั้งค่า directories หลัก
+# =============================================================================
+# โครงสร้าง directory:
+#   /opt/backup/                 ← backup_base_dir (ฐานของทุกอย่าง)
+#   ├── tmp/                     ← backup_temp_dir (เก็บไฟล์ชั่วคราว เช่น DB dumps)
+#   ├── scripts/                 ← เก็บ backup scripts
+#   ├── .cache/
+#   │   └── restic/              ← restic_cache_dir (cache ของ restic)
+#   └── .config/
+#       └── rclone/              ← rclone config
+#
+#   /var/log/backup/             ← backup_log_dir (เก็บ log files)
+#   └── backup-2026-07-02.log   ← log แยกตามวันที่
+
+# backup_base_dir - directory หลักสำหรับเก็บทุกอย่างที่เกี่ยวกับ backup
+# ใช้ /opt/ เพราะเป็นมาตรฐาน Linux สำหรับ optional software
+backup_base_dir: /opt/backup
+
+# backup_temp_dir - directory สำหรับเก็บไฟล์ชั่วคราว
+# เช่น database dump files ที่จะถูกลบหลัง backup เสร็จ
+# ⚠️ ต้องมีพื้นที่เพียงพอสำหรับ database dump ที่ใหญ่ที่สุด
+backup_temp_dir: /opt/backup/tmp
+
+# backup_log_dir - directory สำหรับเก็บ log files
+# ใช้ /var/log/ ตามมาตรฐาน Linux สำหรับ log files
+backup_log_dir: /var/log/backup
+
+# =============================================================================
+# 🔐 Restic Settings - ตั้งค่า Restic Backup Tool
+# =============================================================================
+# Restic คือเครื่องมือ backup ที่:
+#   - เข้ารหัสข้อมูลทั้งหมด (AES-256)
+#   - ทำ deduplication (ไม่เก็บข้อมูลซ้ำ ประหยัดพื้นที่)
+#   - รองรับ backend หลากหลาย (local, S3, rclone, SFTP)
+#   - สร้าง snapshot ที่สามารถ restore ได้ทุก snapshot
+
+# restic_repo - ตำแหน่ง repository ของ restic
+# (ปรับเปลี่ยนเป็นโฟลเดอร์ในเครื่องเพื่อใช้สำหรับทดสอบใน WSL)
+restic_repo: '/opt/backup/restic-repo'
+
+# restic_password - รหัสผ่านสำหรับเข้ารหัส restic repository
+# ⚠️ สำคัญมาก: ถ้าลืมรหัสนี้จะไม่สามารถ restore backup ได้เลย!
+# ค่าจริงเก็บไว้ใน vault (vault/secrets.yml) เพื่อความปลอดภัย
+restic_password: '{{ vault_restic_password }}'
+
+# restic_cache_dir - directory สำหรับเก็บ cache ของ restic
+# cache ช่วยให้ restic ทำงานเร็วขึ้นโดยไม่ต้องดาวน์โหลดข้อมูลจาก remote ทุกครั้ง
+# ⚠️ cache อาจใช้พื้นที่ดิสก์มาก ให้ monitor ขนาดเป็นระยะ
+restic_cache_dir: /opt/backup/.cache/restic
+
+# restic_env_file - ไฟล์สำหรับเก็บ environment variables ของ Restic
+# (กำหนดเป็นตัวแปรแบบ Global เพื่อให้เข้าถึงได้จากทุก Roles)
+restic_env_file: '/etc/restic/restic.env'
+
+# backup_wrapper_script - สคริปต์หลักสำหรับทำงาน Restic Backup
+# (กำหนดเป็นตัวแปรแบบ Global เพื่อให้เข้าถึงได้จากทุก Roles)
+backup_wrapper_script: '/usr/local/bin/backup-wrapper.sh'
+
+# =============================================================================
+# ☁️ Rclone Settings - ตั้งค่า Rclone (Cloud Storage Connector)
+# =============================================================================
+# Rclone เป็นตัวเชื่อมต่อไปยัง cloud storage หลายเจ้า
+# ในโปรเจกต์นี้ใช้เชื่อมต่อกับ Google Drive
+# restic จะใช้ rclone เป็น backend สำหรับเก็บ backup data
+
+# rclone_remote_name - ชื่อ remote ที่ตั้งไว้ใน rclone config
+# ชื่อนี้ต้องตรงกับที่ตั้งค่าด้วยคำสั่ง: rclone config
+rclone_remote_name: gdrive
+
+# rclone_gdrive_path - path บน Google Drive ที่เก็บ restic repository
+# ไม่ต้องมี / นำหน้า
+rclone_gdrive_path: backup/restic-repo
+
+# =============================================================================
+# 🔄 Retention Policy - นโยบายการเก็บรักษา Backup
+# =============================================================================
+# กำหนดว่าจะเก็บ backup snapshots ไว้นานเท่าไหร่
+# restic forget จะลบ snapshots เก่าตามนโยบายนี้
+# restic prune จะลบข้อมูลที่ไม่มี snapshot อ้างอิงถึง (ประหยัดพื้นที่)
+#
+# ตัวอย่างการเก็บ:
+#   Daily 7   = เก็บ backup ล่าสุด 7 วัน (1 snapshot ต่อวัน)
+#   Weekly 4  = เก็บ backup รายสัปดาห์ 4 สัปดาห์
+#   Monthly 6 = เก็บ backup รายเดือน 6 เดือน
+#
+# ดังนั้นจะมี snapshot ทั้งหมดไม่เกิน 7 + 4 + 6 = 17 snapshots
+# (อาจน้อยกว่านี้เพราะ snapshot บางตัวนับซ้ำได้)
+
+# retention_keep_daily - จำนวนวันที่เก็บ daily backup
+retention_keep_daily: 7
+
+# retention_keep_weekly - จำนวนสัปดาห์ที่เก็บ weekly backup
+retention_keep_weekly: 4
+
+# retention_keep_monthly - จำนวนเดือนที่เก็บ monthly backup
+retention_keep_monthly: 6
+
+# =============================================================================
+# 🔔 Discord Notification Settings - ตั้งค่าการแจ้งเตือนผ่าน Discord
+# =============================================================================
+# ส่งแจ้งเตือนผ่าน Discord webhook เมื่อ:
+#   ✅ backup สำเร็จ - แจ้งสรุปผลลัพธ์ (ขนาดข้อมูล, เวลาที่ใช้)
+#   ❌ backup ล้มเหลว - แจ้ง error message เพื่อให้แก้ไขทันเวลา
+#   ⚠️ warning - เช่น พื้นที่เหลือน้อย, retention policy ลบ snapshots
+#
+# วิธีสร้าง Discord Webhook:
+#   1. ไปที่ Discord Server > Server Settings > Integrations > Webhooks
+#   2. สร้าง Webhook ใหม่ เลือก Channel ที่ต้องการรับแจ้งเตือน
+#   3. Copy Webhook URL แล้วใส่ใน vault/secrets.yml
+
+# discord_webhook_url - URL ของ Discord webhook
+# ค่าจริงเก็บไว้ใน vault เพราะ webhook URL เป็นข้อมูลลับ
+# ถ้าหลุดออกไป คนอื่นสามารถส่งข้อความเข้า channel ของเราได้
+discord_webhook_url: '{{ vault_discord_webhook_url }}'
+
+# =============================================================================
+# ⏰ Schedule Settings - ตั้งค่าเวลาการรัน Backup
+# =============================================================================
+# กำหนดเวลาที่ cron job จะรัน backup อัตโนมัติ
+# ค่า default: ทุกวัน เวลา 02:00 น.
+# เลือกเวลาดึกเพราะ:
+#   - ลด impact ต่อ performance ของ services ที่กำลังทำงาน
+#   - Network traffic น้อย ทำให้ upload ไป Google Drive เร็วขึ้น
+#   - ลดโอกาสที่ข้อมูลจะเปลี่ยนระหว่าง backup (data consistency)
+
+# backup_schedule_hour - ชั่วโมงที่จะรัน (0-23, 24-hour format)
+backup_schedule_hour: '2'
+
+# backup_schedule_minute - นาทีที่จะรัน (0-59)
+backup_schedule_minute: '0'
+
+# =============================================================================
+# 📝 Logging Settings - ตั้งค่าการบันทึก Log
+# =============================================================================
+# Log ช่วยให้เรา:
+#   - ตรวจสอบว่า backup สำเร็จหรือไม่
+#   - ดู error message เมื่อเกิดปัญหา
+#   - วิเคราะห์ขนาดข้อมูลที่ backup ในแต่ละวัน
+#   - ใช้เป็นหลักฐานว่า backup ทำงานตามกำหนด (compliance)
+
+# log_timestamp_format - รูปแบบ timestamp ที่ใช้ใน log files
+# %Y = ปี (4 หลัก), %m = เดือน, %d = วัน
+# %H = ชั่วโมง (24h), %M = นาที, %S = วินาที
+# ตัวอย่าง output: 2026-07-02 02:00:05
+log_timestamp_format: '%Y-%m-%d %H:%M:%S'

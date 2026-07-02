@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# roles/backup_docker/defaults/main.yml
+# ค่าเริ่มต้นสำหรับ Docker Backup Role
+# =============================================================================
+
+# รายการไดเรกทอรีของ docker-compose (เช่น stacks ต่างๆ) ที่ต้องการ backup
+docker_compose_dirs: []
+
+# ไดเรกทอรีเก็บ docker volumes ของระบบ
+docker_volumes_dir: "/var/lib/docker/volumes"
+
+# เลือกว่าจะปิด container ชั่วคราวก่อน backup หรือไม่ เพื่อลดการแก้ไขข้อมูลระหว่างสำรอง
+stop_containers_before_backup: false
+
+# แท็กสำหรับ backup ข้อมูล Docker
+docker_backup_tag: "docker"

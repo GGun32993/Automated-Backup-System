@@ -1,0 +1,29 @@
+# =============================================================================
+# Git Ignore - ไฟล์สำหรับระบุข้อมูลที่ไม่ต้องการส่งขึ้น GitHub
+# =============================================================================
+
+# Ansible runtime files
+*.retry
+ansible.log
+
+# Restic & Backup local cache and temp files
+.cache/
+tmp/
+db-dumps/
+*.dump
+*.sqlite
+.restic-excludes
+.backup-metrics.json
+
+# Local configs and credentials
+.config/
+rclone.conf
+
+# Vault password files (คีย์ปลดล็อกความลับ)
+.vault_pass
+vault_pass.txt
+~/.vault_pass
+
+# OS generated files
+.DS_Store
+Thumbs.db

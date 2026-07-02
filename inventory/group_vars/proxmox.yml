@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# inventory/group_vars/proxmox.yml
+# ตัวแปรเฉพาะสำหรับกลุ่มเครื่อง Proxmox VE
+# =============================================================================
+
+# --- Tags สำหรับ Restic Backup ---
+# ระบุ tag สำหรับแยก snapshot ใน restic
+backup_tags:
+  - proxmox
+  - configs
+
+# --- โฟลเดอร์ที่ต้องการ Backup ใน Proxmox ---
+# ใน Proxmox VE ไฟล์ config หลักที่สำคัญจะอยู่ที่ /etc/pve (Cluster File System)
+# และโฟลเดอร์สำหรับเก็บ config อื่นๆ ของระบบ
+config_backup_paths:
+  - /etc/pve                   # Proxmox configuration database (VM/CT configs)
+  - /etc/network/interfaces    # การตั้งค่า Network
+  - /etc/hosts                 # Host resolution
+  - /var/lib/pve-cluster       # Database ของ cluster config
+  - /etc/corosync              # Cluster corosync configs (ถ้าทำ cluster)

@@ -1,0 +1,14 @@
+# =============================================================================
+# roles/restic_setup/templates/rclone.conf.j2
+# คอนฟิกูเรชันของ rclone สำหรับเชื่อมต่อกับ Google Drive
+# =============================================================================
+
+[gdrive]
+type = drive
+client_id = {{ vault_rclone_client_id | default('') }}
+client_secret = {{ vault_rclone_client_secret | default('') }}
+scope = drive
+# token จะเป็น JSON string ที่ได้จากการทำ OAuth Authentication (rclone config)
+# ในสภาวะเริ่มต้น หากไม่มี token ระบบจะไม่สามารถเข้าถึง Google Drive ได้
+# แนะนำให้อ่าน SETUP_GUIDE.md เรื่องวิธีการกรอก token ตรงนี้
+token = {{ vault_rclone_refresh_token | default('') }}

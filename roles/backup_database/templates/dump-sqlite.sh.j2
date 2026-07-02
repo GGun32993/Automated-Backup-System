@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# =============================================================================
+# สคริปต์สำรองข้อมูล SQLite Database: {{ item.name }}
+# สร้างโดย Ansible (รันอัตโนมัติ)
+# =============================================================================
+set -euo pipefail
+
+DB_NAME="{{ item.name }}"
+DB_PATH="{{ item.path }}"
+DUMP_DIR="{{ db_dump_dir }}"
+DUMP_FILE="$DUMP_DIR/$DB_NAME-$(date +%Y%m%d%H%M%S).sqlite"
+LOG_FILE="/var/log/backup/db-backup.log"
+
+mkdir -p "$DUMP_DIR"
+mkdir -p "$(dirname "$LOG_FILE")"
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] เริ่มต้น dump SQLite database: $DB_NAME ($DB_PATH)" >> "$LOG_FILE"
+
+# ตรวจสอบว่าไฟล์ database ต้นทางมีอยู่จริงหรือไม่
+if [ ! -f "$DB_PATH" ]; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: ไม่พบไฟล์ SQLite ณ ตำแหน่ง $DB_PATH" >> "$LOG_FILE"
+    exit 1
+fi
+
+# ตรวจสอบการใช้งาน sqlite3 CLI
+if command -v sqlite3 &> /dev/null; then
+    # การใช้ `.backup` ดีที่สุดเนื่องจากรองรับ Online Backup (ไม่ล็อก table และข้อมูลคงสภาพสมบูรณ์)
+    if sqlite3 "$DB_PATH" ".backup '$DUMP_FILE'" >> "$LOG_FILE" 2>&1; then
+        FILE_SIZE=$(du -h "$DUMP_FILE" | cut -f1)
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] สำเร็จ: $DB_NAME (ขนาด: $FILE_SIZE)" >> "$LOG_FILE"
+        chmod 600 "$DUMP_FILE"
+        echo "$DUMP_FILE" > "$DUMP_DIR/$DB_NAME.latest_path"
+        exit 0
+      else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ล้มเหลว: เกิดข้อผิดพลาดขณะรัน sqlite3 .backup" >> "$LOG_FILE"
+        exit 1
+    fi
+else
+    # กรณีไม่มี sqlite3 ในเครื่อง ให้ก๊อปปี้ตรงๆ แต่บันทึก warning
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: ไม่พบ sqlite3 CLI จะทำ Copy ไฟล์ดิบแทน (เสี่ยงต่อความไม่สมบูรณ์หากมี transaction รันอยู่)" >> "$LOG_FILE"
+    if cp "$DB_PATH" "$DUMP_FILE" >> "$LOG_FILE" 2>&1; then
+        FILE_SIZE=$(du -h "$DUMP_FILE" | cut -f1)
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] สำเร็จ (Copy): $DB_NAME (ขนาด: $FILE_SIZE)" >> "$LOG_FILE"
+        chmod 600 "$DUMP_FILE"
+        echo "$DUMP_FILE" > "$DUMP_DIR/$DB_NAME.latest_path"
+        exit 0
+    else
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ล้มเหลว: Copy ไฟล์ SQLite ล้มเหลว" >> "$LOG_FILE"
+        exit 1
+    fi
+fi

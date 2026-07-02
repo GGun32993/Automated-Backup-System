@@ -1,0 +1,10 @@
+---
+backup_tags:
+  - local-test
+
+# เลือกสำรองไฟล์ /etc/hosts เพื่อใช้ทดสอบระบบเบื้องต้น
+config_backup_paths:
+  - /etc/hosts
+
+docker_compose_dirs: []
+backup_databases: []

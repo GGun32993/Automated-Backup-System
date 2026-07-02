@@ -1,0 +1,14 @@
+---
+# =============================================================================
+# roles/backup_configs/defaults/main.yml
+# ค่าเริ่มต้นสำหรับ Configuration Backup Role
+# =============================================================================
+
+# รายชื่อไฟล์คอนฟิก และตำแหน่งที่ระบุว่าต้องการ Backup
+# โครงสร้างเป็น list ของ string หรือ map ก็ได้
+# สำหรับเครื่อง Docker Host: จะสำรอง WireGuard config, AdGuard Home config
+# สำหรับเครื่อง Proxmox Host: จะดึงมาจาก group_vars/proxmox.yml
+config_backup_paths: []
+
+# แท็กสำหรับจัดหมวดหมู่ใน restic
+config_backup_tag: "configs"
